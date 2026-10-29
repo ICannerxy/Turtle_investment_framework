@@ -183,12 +183,12 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
     else:
         y0 = years[0]
         items = [
-            ("营业收入", inc, ("营业收入",)),
-            ("营业利润", inc, ("营业利润",)),
-            ("净利润", inc, ("净利润",)),
-            ("归母净利润", inc, ("归母净利润",)),
+            ("营业收入", inc, ("营业收入", "营业额")),
+            ("营业利润", inc, ("营业利润", "经营溢利")),
+            ("净利润", inc, ("净利润", "除税后溢利")),
+            ("归母净利润", inc, ("归母净利润", "股东应占溢利")),
             ("总资产", bs, ("总资产",)),
-            ("归母所有者权益", bs, ("归母所有者权益", "归母权益")),
+            ("归母所有者权益", bs, ("归母所有者权益", "归母权益", "股东权益")),
             ("经营活动现金流(OCF)", cf, ("经营活动现金流", "OCF")),
             ("自由现金流(FCF)", cf, ("自由现金流", "FCF")),
         ]
@@ -206,8 +206,8 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
     if len(years) < 2:
         parts.append("> ⚠️ CM§2 跳过：可比年度不足 2 年。\n")
     else:
-        yoy_items = [("营业收入", inc, ("营业收入",)), ("归母净利润", inc, ("归母净利润",)),
-                     ("净利润", inc, ("净利润",)), ("营业利润", inc, ("营业利润",))]
+        yoy_items = [("营业收入", inc, ("营业收入", "营业额")), ("归母净利润", inc, ("归母净利润", "股东应占溢利")),
+                     ("净利润", inc, ("净利润", "除税后溢利")), ("营业利润", inc, ("营业利润", "经营溢利"))]
         headers = ["指标"] + [f"{years[i]} vs {years[i + 1]}" for i in range(len(years) - 1)]
         rows = []
         for label, src, names in yoy_items:
@@ -223,8 +223,8 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
         parts.append("> ⚠️ CM§3 跳过：缺少年度序列。\n")
     else:
         stat_specs = [
-            ("营业收入(亿元)", [to_yi(v) for v in _series(inc, find_item(inc, "营业收入"), years)]),
-            ("归母净利润(亿元)", [to_yi(v) for v in _series(inc, find_item(inc, "归母净利润"), years)]),
+            ("营业收入(亿元)", [to_yi(v) for v in _series(inc, find_item(inc, "营业收入", "营业额"), years)]),
+            ("归母净利润(亿元)", [to_yi(v) for v in _series(inc, find_item(inc, "归母净利润", "股东应占溢利"), years)]),
             ("ROE(%)", _series(fin, find_item(fin, "ROE", "净资产收益率"), _full_years(fin_cols))),
             ("毛利率(%)", _series(fin, find_item(fin, "毛利率"), _full_years(fin_cols))),
             ("净利率(%)", _series(fin, find_item(fin, "净利率"), _full_years(fin_cols))),
@@ -240,7 +240,7 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
     # ── CM§4 分红支付率 ──
     parts.append(format_header(2, "CM§4 分红支付率（总分红 ÷ 归母净利润）"))
     div_by_year = _dividends_by_year(sections.get("6", ""))
-    np_key = find_item(inc, "归母净利润")
+    np_key = find_item(inc, "归母净利润", "股东应占溢利")
     if not div_by_year or not np_key:
         parts.append("> ⚠️ CM§4 跳过：缺少 §6 分红或 §3 归母净利润。\n")
     else:
@@ -257,10 +257,10 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
 
     # ── CM§5 PE 估值链网格 ──
     parts.append(format_header(2, "CM§5 PE 估值链网格（目标价 = EPS × PE × 折扣）"))
-    eps_key = find_item(inc, "基本EPS", "基本每股收益", "EPS")
+    eps_key = find_item(inc, "基本EPS", "基本每股收益", "EPS", "每股基本盈利")
     eps = inc.get(eps_key, {}).get(years[0]) if (eps_key and years) else None
-    price = _num(kv1.get("当前价格"))
-    mktcap_wan = _num(kv1.get("总市值 (万元)")) or _num(kv1.get("总市值(万元)"))
+    price = _num(kv1.get("当前价格 (HKD)")) or _num(kv1.get("当前价格"))
+    mktcap_wan = _num(kv1.get("总市值 (万港元)")) or _num(kv1.get("总市值 (万元)")) or _num(kv1.get("总市值(万元)"))
     if eps is None:
         parts.append("> ⚠️ CM§5 跳过：缺少 §3 基本EPS。\n")
     else:

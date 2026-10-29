@@ -359,8 +359,18 @@ def main():
         print(f"  Extra fields: {args.extra_fields or 'none'}")
         return
 
-    # Get token
-    token = args.token or get_token()
+    # Get token with optional AkShare fallback
+    try:
+        token = args.token or get_token()
+    except RuntimeError:
+        if not ts_code.endswith(".US"):
+            print("⚠️ 未检测到 TUSHARE_TOKEN，正在自动降级使用 AkShare/yfinance 免费采集通道 (免 Token)...", file=sys.stderr)
+            import subprocess
+            akshare_script = os.path.join(os.path.dirname(__file__), "akshare_collector.py")
+            cmd = [sys.executable, akshare_script, "--code", args.code, "--output", args.output]
+            res = subprocess.run(cmd)
+            sys.exit(res.returncode)
+        raise
     client = TushareClient(token)
 
     # TTL cache controls
@@ -413,7 +423,6 @@ def main():
         data_pack += "\n".join(extra_lines)
 
     # Write output
-    import os
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(data_pack)

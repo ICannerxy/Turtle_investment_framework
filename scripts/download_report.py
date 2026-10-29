@@ -46,7 +46,7 @@ BASE_HEADERS = {
 }
 
 URL_PATTERN = re.compile(
-    r"^https?://(stockn\.xueqiu\.com|[\w.-]*10jqka\.com\.cn|[\w.-]*cninfo\.com\.cn)/.+\.pdf$",
+    r"^https?://(stockn\.xueqiu\.com|[\w.-]*10jqka\.com\.cn|[\w.-]*cninfo\.com\.cn|[\w.-]*hkexnews\.hk|[\w.-]*dfcfw\.com|[\w.-]*eastmoney\.com|[\w.-]*polywuye\.com|[\w.-]*todayir\.com|[\w.-]*copl\.com\.hk|[\w.-]*chinafoodsltd\.com)/.+\.pdf$",
     re.IGNORECASE,
 )
 
@@ -58,6 +58,16 @@ def get_headers(url):
         headers["Referer"] = "https://www.cninfo.com.cn/"
     elif "10jqka.com.cn" in url:
         headers["Referer"] = "https://10jqka.com.cn/"
+    elif "hkexnews.hk" in url:
+        headers["Referer"] = "https://www.hkexnews.hk/"
+    elif "polywuye.com" in url:
+        headers["Referer"] = "https://www.polywuye.com/Investor/notices"
+    elif "todayir.com" in url:
+        headers["Referer"] = "https://chinaoverseasproperty-staging.todayir.com/"
+    elif "copl.com.hk" in url:
+        headers["Referer"] = "https://www.copl.com.hk/"
+    elif "dfcfw.com" in url or "eastmoney.com" in url:
+        headers["Referer"] = "https://data.eastmoney.com/"
     else:
         headers["Referer"] = "https://xueqiu.com/"
     return headers
@@ -98,7 +108,7 @@ def validate_url(url):
     if not URL_PATTERN.match(url):
         return False, (
             f"Invalid URL: {url}\n"
-            "URL must be a .pdf link from cninfo.com.cn, stockn.xueqiu.com, or 10jqka.com.cn"
+            "URL must be a .pdf link from cninfo.com.cn, stockn.xueqiu.com, 10jqka.com.cn, hkexnews.hk, or official IR domains"
         )
     return True, ""
 

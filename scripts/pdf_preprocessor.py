@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turtle Investment Framework - PDF Preprocessor (Phase 2A).
 
-Scans annual report PDFs for 7 target sections using keyword matching
+Scans annual report PDFs for 8 target sections using keyword matching
 and outputs structured JSON for Agent fine-extraction.
 
 Target sections:
@@ -12,6 +12,7 @@ Target sections:
     P13: Non-recurring items (非经常性损益)
     MDA: Management Discussion & Analysis (管理层讨论与分析)
     SUB: Subsidiary holdings (主要控股参股公司)
+    RET: Shareholder returns & repurchases (股东回报规划与股份回购)
 
 Usage:
     python3 scripts/pdf_preprocessor.py --pdf report.pdf
@@ -140,12 +141,44 @@ SECTION_KEYWORDS: Dict[str, List[str]] = {
         "在其他主體中的權益",
         "長期股權投資——對子公司",
     ],
+    "RET": [
+        # Simplified Chinese
+        "股东回报规划",
+        "股东分红回报规划",
+        "未来三年股东回报规划",
+        "未来三年股东分红回报规划",
+        "未来三年股东回报",
+        "三年股东回报规划",
+        "股份回购计划",
+        "股份回购方案",
+        "回购股份方案",
+        "回购股份计划",
+        "回购并注销",
+        "回购股份",
+        "现金分红政策",
+        "利润分配预案",
+        "利润分配及资本公积金转增股本",
+        # Traditional Chinese (HK reports)
+        "股東回報規劃",
+        "股東回報計劃",
+        "股東回報",
+        "股份購回計劃",
+        "股份回購計劃",
+        "購回股份",
+        "回購股份",
+        "回購並註銷",
+        "購回並註銷",
+        "股息政策",
+        "建議末期股息",
+        "建議中期股息",
+    ],
 }
 
 # Per-section extraction parameters (overrides defaults)
 SECTION_EXTRACT_CONFIG: Dict[str, Dict[str, int]] = {
     "MDA": {"buffer_pages": 3, "max_chars": 8000},
     "SUB": {"buffer_pages": 2, "max_chars": 6000},
+    "RET": {"buffer_pages": 2, "max_chars": 6000},
 }
 DEFAULT_BUFFER_PAGES = 1
 DEFAULT_MAX_CHARS = 4000
@@ -176,6 +209,7 @@ SECTION_ZONE_PREFERENCES: Dict[str, Dict[str, List[str]]] = {
     "P13": {"prefer": ["SUPPLEMENT_ZONE", "NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
     "MDA": {"prefer": ["MDA_ZONE"], "avoid": ["NOTES_ZONE", "FIN_ZONE", "POLICY_ZONE", "SUPPLEMENT_ZONE"]},
     "SUB": {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "RET": {"prefer": ["MDA_ZONE", "GOVERNANCE_ZONE", "INTRO_ZONE"], "avoid": ["POLICY_ZONE"]},
 }
 
 
@@ -496,6 +530,16 @@ def find_section_pages(
 
         results[section_id] = ordered_pages
 
+    # Quarterly fallback: if short report (<= 30 pages) and MDA has no matches,
+    # capture core financial indicator and operating overview pages
+    if total_pages <= 30 and not results.get("MDA"):
+        q_mda_pages = []
+        for page_num, text in pages_text:
+            if any(k in text for k in ["主要会计数据和财务指标", "主要财务数据", "经营情况", "高质量发展"]):
+                q_mda_pages.append(page_num)
+        if q_mda_pages:
+            results["MDA"] = q_mda_pages[:3]
+
     return results
 
 
@@ -639,7 +683,7 @@ def write_output(
         },
     }
 
-    for section_id in ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB"]:
+    for section_id in list(SECTION_KEYWORDS.keys()):
         output[section_id] = contexts.get(section_id)
 
     # Ensure output directory exists
@@ -665,12 +709,18 @@ def parse_args(args=None):
 Examples:
   %(prog)s --pdf 伊利股份_2024_年报.pdf
   %(prog)s --pdf report.pdf --output output/pdf_sections.json --verbose
+  %(prog)s --dir output/00168.HK_青岛啤酒股份/ --verbose
         """,
     )
     parser.add_argument(
         "--pdf",
-        required=True,
-        help="Path to the annual report PDF file",
+        default=None,
+        help="Path to single annual report PDF file",
+    )
+    parser.add_argument(
+        "--dir",
+        default=None,
+        help="Directory containing downloaded report PDFs to batch-process",
     )
     parser.add_argument(
         "--output",
@@ -692,7 +742,10 @@ Examples:
         action="store_true",
         help="Print parsed arguments and exit without processing",
     )
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+    if not parsed.pdf and not parsed.dir:
+        parser.error("Either --pdf or --dir must be specified")
+    return parsed
 
 
 def _load_hints(hints_path: Optional[str]) -> Dict[str, dict]:
@@ -791,15 +844,89 @@ def run_pipeline(pdf_path: str, output_path: str, verbose: bool = False,
     return result
 
 
+def batch_process_dir(dir_path: str, verbose: bool = False) -> Dict[str, dict]:
+    """Scan directory for report PDFs, categorize and extract sections for all.
+
+    Categorization:
+      - Interim (中报 / 半年度 / interim) -> pdf_sections_interim.json
+      - Q1 (一季报 / 1季报 / q1) -> pdf_sections_q1.json
+      - Q3 (三季报 / 3季报 / q3) -> pdf_sections_q3.json
+      - Annual (年报 / annual):
+        Sorted by year descending:
+          Latest -> pdf_sections.json
+          Earlier -> pdf_sections_{year}.json
+
+    Returns:
+        Dict mapping output_json_path -> pipeline result dict.
+    """
+    if not os.path.isdir(dir_path):
+        raise FileNotFoundError(f"Directory not found: {dir_path}")
+
+    pdf_files = [f for f in os.listdir(dir_path) if f.lower().endswith(".pdf")]
+    if not pdf_files:
+        raise FileNotFoundError(f"No PDF files found in directory: {dir_path}")
+
+    tasks: List[Tuple[str, str]] = []
+    annual_reports: List[Tuple[int, str]] = []
+
+    for fname in sorted(pdf_files):
+        full_path = os.path.join(dir_path, fname)
+        lower_name = fname.lower()
+        if "中报" in fname or "半年度" in fname or "interim" in lower_name:
+            tasks.append((full_path, os.path.join(dir_path, "pdf_sections_interim.json")))
+        elif "一季报" in fname or "1季报" in fname or "q1" in lower_name:
+            tasks.append((full_path, os.path.join(dir_path, "pdf_sections_q1.json")))
+        elif "三季报" in fname or "3季报" in fname or "q3" in lower_name:
+            tasks.append((full_path, os.path.join(dir_path, "pdf_sections_q3.json")))
+        elif "四季报" in fname or "4季报" in fname or "q4" in lower_name:
+            tasks.append((full_path, os.path.join(dir_path, "pdf_sections_q4.json")))
+        elif any(k in lower_name for k in ("年报", "年報", "年度报告", "年度報告", "annual")):
+            match = re.search(r"(20\d{2})", fname)
+            year = int(match.group(1)) if match else 0
+            annual_reports.append((year, full_path))
+        else:
+            continue
+
+    if annual_reports:
+        annual_reports.sort(key=lambda x: x[0], reverse=True)
+        tasks.append((annual_reports[0][1], os.path.join(dir_path, "pdf_sections.json")))
+        for yr, pth in annual_reports[1:]:
+            out_name = f"pdf_sections_{yr}.json" if yr else f"pdf_sections_{os.path.splitext(os.path.basename(pth))[0]}.json"
+            tasks.append((pth, os.path.join(dir_path, out_name)))
+
+    results: Dict[str, dict] = {}
+    for pdf_path, out_path in tasks:
+        if verbose:
+            print(f"\nProcessing {os.path.basename(pdf_path)} -> {os.path.basename(out_path)}...")
+        res = run_pipeline(pdf_path, out_path, verbose=verbose)
+        results[out_path] = res
+
+    return results
+
+
 def main():
     args = parse_args()
 
     if args.dry_run:
         print("=== Dry Run ===")
         print(f"  PDF: {args.pdf}")
+        print(f"  Dir: {args.dir}")
         print(f"  Output: {args.output}")
         print(f"  Hints: {args.hints}")
         print(f"  Verbose: {args.verbose}")
+        return
+
+    if args.dir:
+        try:
+            results = batch_process_dir(args.dir, verbose=args.verbose)
+            print(f"Batch processed {len(results)} reports in {args.dir}")
+            for out_path, res in results.items():
+                found = res["metadata"]["sections_found"]
+                total = res["metadata"]["sections_total"]
+                print(f"  {os.path.basename(out_path)}: {found}/{total} sections")
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         return
 
     try:

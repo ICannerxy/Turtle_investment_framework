@@ -124,6 +124,31 @@ class TestBuildReport:
         assert "CM§5" in report
         assert "36.00" in report            # EPS 2.0 × PE 20 × 0.9
 
+    def test_cm6_interim_monitoring(self, sections):
+        report = build_report(sections, [10], [1.0])
+        assert "CM§6" in report
+        assert "2024Q1" in report
+        assert "120.00" in report           # 2024Q1 营收 120 亿
+        assert "Q1单季" in report
+
+    def test_cm6_invalid_pair_no_infer(self, sections):
+        s = dict(sections)
+        # Mock income statement with only Q3 and Q1 (missing H1)
+        s["3"] = (
+            "## 3. 利润表\n\n"
+            "| 指标 | 2024Q3 | 2024Q1 |\n"
+            "|:---|:---|:---|\n"
+            "| 营业收入 | 30,000.00 | 10,000.00 |\n"
+            "| 归母净利润 | 3,000.00 | 1,000.00 |\n"
+        )
+        report = build_report(s, [10], [1.0])
+        assert "CM§6" in report
+        # Q3 should be labeled 累计披露 and not infer a single quarter
+        lines = [line for line in report.split("\n") if "2024Q3" in line]
+        assert len(lines) == 1
+        assert "累计披露" in lines[0]
+        assert "推算Q" not in lines[0]
+
     def test_header_warning_and_no_recompute(self, sections):
         report = build_report(sections, [10], [1.0])
         assert "禁止重算" in report
@@ -133,6 +158,19 @@ class TestBuildReport:
         subset = {k: v for k, v in sections.items() if k != "6"}
         report = build_report(subset, [10], [1.0])
         assert "CM§4 跳过" in report         # missing §6 → ⚠️ skip line
+
+    def test_repurchase_cm7_included(self, sections):
+        s = dict(sections)
+        s["15"] = (
+            "## 15. 股票回购\n\n"
+            "- 近期累计回购笔数: **117 笔**\n"
+            "- 最新回购交易日: **2026-10-23** (回购股数: 8,400, 回购均价: 8.996 HKD)\n"
+            "- 近期样本已回购金额: **117.79 百万港元**\n"
+        )
+        report = build_report(s, [10], [1.0])
+        assert "CM§7 股票回购与股东回报核验提示" in report
+        assert "117.79 百万港元" in report
+        assert "严禁盲目默认 $O=0$" in report
 
 
 # ── CLI ─────────────────────────────────────────────────────────────

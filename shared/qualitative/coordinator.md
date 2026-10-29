@@ -102,13 +102,18 @@ python3 scripts/quality_control.py \
 # exit 0 成功 / 2 输入缺失或不可解析（缺失时 Step 2 降级：正文换算须逐步展示算式）
 ```
 
-### 1B：PDF 获取与加载
+### 1B：PDF 获取与加载（完整财报包体系）
 
-**PDF 获取优先级**：
-1. 用户已提供 PDF 路径/URL → 直接使用
-2. 用户未提供 PDF → 使用 `/download-annual-report {stock_code}` 搜索并下载最新年报（或中报）
-   - 下载目标目录：`{output_dir}/`
-   - 下载失败（重试后仍失败）→ fallback 到 WebSearch（Step 1C-fallback）
+完整流程拉取两套核心财报体系：
+1. **最近两年的完整年度报告**（如 2025、2024 年报）：用于跨会计年度资产负债表与审计附注的连续性比对。
+2. **本年度已披露的全部中期与季度报告**（一季报、中报/半年报、三季报）：用于追踪最新经营边际变化与动态动销指标。
+
+支持一键拉取完整财报包：
+```bash
+python3 scripts/download_report.py --stock-code {ts_code} --save-dir {output_dir}/ --fetch-all
+```
+- 若本地已存在对应 PDF 则自动跳过重复下载
+- 下载失败（重试后仍失败）→ fallback 到 WebSearch（Step 1C-fallback）
 
 **PDF 读取策略**：
 
@@ -165,19 +170,22 @@ Agent(
   description = "PDF附注提取(供下游策略)"
 )
 
-# 扫描件 fallback（仅当上述 Agent 返回 PDF_TYPE=SCANNED 时执行）
+# 批量全量提取 / 扫描件 fallback：
+# 使用 --dir 参数一键批处理目录下全部财报（最新年报、上期年报、中报、季报），
+# 自动生成对应的 pdf_sections.json, pdf_sections_interim.json, pdf_sections_q1.json, pdf_sections_q3.json
 Bash(
-  command = "python3 scripts/pdf_preprocessor.py --pdf {output_dir}/{pdf_filename} --output {output_dir}/pdf_sections.json",
-  description = "PDF预处理-扫描件fallback"
+  command = "python3 scripts/pdf_preprocessor.py --dir {output_dir}/ --verbose",
+  description = "PDF全量批处理提取"
 )
 Agent(
   prompt = """
   请阅读 {workspace}/strategies/turtle/phase2_PDF解析.md 中的完整指令。
-  pdf_sections.json 文件路径：{output_dir}/pdf_sections.json
+  输入文件：{output_dir}/pdf_sections.json（年报）、{output_dir}/pdf_sections_interim.json（中报，若存在）
   公司名称：{company_name}
-  将解析结果写入：{output_dir}/data_pack_report.md
+  将年报解析结果写入：{output_dir}/data_pack_report.md
+  当中报存在时，将中报解析结果写入：{output_dir}/data_pack_report_interim.md
   """,
-  description = "PDF精提取-扫描件fallback"
+  description = "PDF精提取"
 )
 ```
 

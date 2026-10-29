@@ -99,6 +99,23 @@ class TestGates:
         assert any("数字溯源汇总" in f for f in failures)
         assert any("结构化参数" in f for f in failures)
 
+    def test_shareholder_return_gate_flags_omission(self, tmp_path):
+        import json
+        sec_file = tmp_path / "pdf_sections.json"
+        sec_file.write_text(json.dumps({
+            "RET": "董事會已批准三年合計人民幣15億元股東回報計劃，擬每年動用約人民幣5億元回購並註銷股份。"
+        }), encoding="utf-8")
+        
+        # Report without any mention of shareholder return / buyback
+        empty_report = "## 维度一\n" + ("测试" * 300) + "\n## 维度二\n" + ("测试" * 400) + "\n## 数字溯源汇总\n## 结构化参数\n"
+        fails = check_gates(empty_report, str(sec_file))
+        assert any("股东回报硬门控" in f for f in fails)
+
+        # Report mentioning shareholder return passes the gate
+        good_report = empty_report + "\n管理层承诺未来三年股东回报规划，每年动用5亿元实施注销型回购及分红。"
+        fails2 = check_gates(good_report, str(sec_file))
+        assert not any("股东回报硬门控" in f for f in fails2)
+
 
 # ── CLI ─────────────────────────────────────────────────────────────
 

@@ -40,6 +40,7 @@ from scripts.pdf_preprocessor import (
     _truncate_at_boundary,
     _load_hints,
     parse_args,
+    batch_process_dir,
 )
 
 
@@ -50,10 +51,10 @@ from scripts.pdf_preprocessor import (
 class TestSectionKeywords:
     """Feature #38: Keyword library for 5 target sections."""
 
-    def test_all_seven_sections_present(self):
-        assert set(SECTION_KEYWORDS.keys()) == {"P2", "P3", "P4", "P6", "P13", "MDA", "SUB"}
+    def test_all_target_sections_present(self):
+        assert set(SECTION_KEYWORDS.keys()) == {"P2", "P3", "P4", "P6", "P13", "MDA", "SUB", "RET"}
 
-    @pytest.mark.parametrize("section_id", ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB"])
+    @pytest.mark.parametrize("section_id", ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB", "RET"])
     def test_each_section_has_at_least_3_keywords(self, section_id):
         assert len(SECTION_KEYWORDS[section_id]) >= 3, (
             f"{section_id} has only {len(SECTION_KEYWORDS[section_id])} keywords"
@@ -65,10 +66,10 @@ class TestSectionKeywords:
                 assert isinstance(kw, str) and len(kw) > 0
 
     # Feature #43: Traditional Chinese support
-    @pytest.mark.parametrize("section_id", ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB"])
+    @pytest.mark.parametrize("section_id", ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB", "RET"])
     def test_has_traditional_chinese_keywords(self, section_id):
         """Each section should have at least one traditional Chinese variant."""
-        trad_chars = set("權資產賬齡關聯負債損經項訟營諾決價際層討論與會報導")
+        trad_chars = set("權資產賬齡關聯負債損經項訟營諾決價際層討論與會報導劃購回息議東")
         has_trad = any(
             any(ch in trad_chars for ch in kw)
             for kw in SECTION_KEYWORDS[section_id]
@@ -959,3 +960,48 @@ class TestZoneDetection:
             zone="NOTES_ZONE", section_id="P3"
         )
         assert score_ar > score_prepay2
+
+
+class TestBatchProcessDir:
+    """Tests for batch directory processing and quarterly report handling."""
+
+    def test_quarterly_mda_fallback(self):
+        """Short reports (<=30 pages) should match financial indicator pages as MDA."""
+        pages = [
+            (1, "青岛啤酒 2026年第三季度报告 一、主要财务数据 (一)主要会计数据和财务指标 营业收入 83.8亿元"),
+            (2, "主要财务数据 报告期内，国内啤酒市场销量持续承压，公司高质量发展"),
+            (3, "二、股东信息 前十名股东持股情况表"),
+        ]
+        result = find_section_pages(pages)
+        assert 1 in result["MDA"] or 2 in result["MDA"]
+
+    @patch("scripts.pdf_preprocessor.run_pipeline")
+    def test_batch_process_categorization(self, mock_pipeline):
+        mock_pipeline.return_value = {
+            "metadata": {"sections_found": 5, "sections_total": 7}
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create dummy pdf files including an unrelated notice PDF
+            fnames = [
+                "00168_2024_年报.pdf",
+                "00168_2025_年报.pdf",
+                "00168_2026_一季报.pdf",
+                "00168_2026_中报.pdf",
+                "00168_2026_三季报.pdf",
+                "00168_20261025_临时回购进展公告.pdf",
+            ]
+            for fn in fnames:
+                with open(os.path.join(tmpdir, fn), "wb") as f:
+                    f.write(b"%PDF-1.4 dummy")
+
+            results = batch_process_dir(tmpdir)
+            expected_keys = {
+                os.path.join(tmpdir, "pdf_sections.json"),       # latest annual (2025)
+                os.path.join(tmpdir, "pdf_sections_2024.json"),  # prior annual (2024)
+                os.path.join(tmpdir, "pdf_sections_interim.json"),
+                os.path.join(tmpdir, "pdf_sections_q1.json"),
+                os.path.join(tmpdir, "pdf_sections_q3.json"),
+            }
+            assert set(results.keys()) == expected_keys
+            # Notice PDF should be skipped, so call_count is exactly 5
+            assert mock_pipeline.call_count == 5

@@ -278,8 +278,72 @@ def build_report(sections: Dict[str, str], pe_bands: List[float],
         parts.append(format_table(headers, rows, ["l"] + ["r"] * len(discounts)))
         parts.append("")
 
+    # ── CM§6 最新边际季度/中期异动监控 ──
+    interim_cols = [c for c in inc_cols if not re.fullmatch(r"\d{4}", c)]
+    if interim_cols:
+        parts.append(format_header(2, "CM§6 最新边际季度/中期异动监控"))
+        rev_key = find_item(inc, "营业收入", "营业额")
+        np_key = find_item(inc, "归母净利润", "股东应占溢利")
+        headers = ["期间", "累计营业收入(亿元)", "累计归母净利润(亿元)", "推算单季营收(亿元)", "推算单季归母净利(亿元)", "边际提示"]
+        rows = []
+        for i, col in enumerate(interim_cols):
+            rev_val = to_yi(inc.get(rev_key, {}).get(col)) if rev_key else None
+            np_val = to_yi(inc.get(np_key, {}).get(col)) if np_key else None
+            single_rev = None
+            single_np = None
+            note = "累计披露"
+            if re.search(r"Q1", col, re.IGNORECASE):
+                single_rev, single_np, note = rev_val, np_val, "Q1单季"
+            elif i + 1 < len(interim_cols):
+                next_col = interim_cols[i + 1]
+                yc, yn = re.match(r"\d{4}", col), re.match(r"\d{4}", next_col)
+                if yc and yn and yc.group(0) == yn.group(0):
+                    n_rev = to_yi(inc.get(rev_key, {}).get(next_col)) if rev_key else None
+                    n_np = to_yi(inc.get(np_key, {}).get(next_col)) if np_key else None
+                    is_valid_pair = False
+                    if "Q3" in col.upper() and "H1" in next_col.upper():
+                        note, is_valid_pair = "推算Q3单季 (9M - H1)", True
+                    elif "H1" in col.upper() and "Q1" in next_col.upper():
+                        note, is_valid_pair = "推算Q2单季 (H1 - Q1)", True
+
+                    if is_valid_pair and rev_val is not None and n_rev is not None:
+                        single_rev = rev_val - n_rev
+                    if is_valid_pair and np_val is not None and n_np is not None:
+                        single_np = np_val - n_np
+            rows.append([col, format_number(rev_val, divider=1), format_number(np_val, divider=1),
+                         format_number(single_rev, divider=1), format_number(single_np, divider=1), note])
+        parts.append(format_table(headers, rows, ["l", "r", "r", "r", "r", "l"]))
+        parts.append("\n> ⚠️ **边际异动提示**：若最新单季利润或营收显著降速/承压，D3 章节必须深入分析边际成因（如销量下滑、批价松动、成本刚性、去库存等），严禁只看全财年而遗漏最新周期拐点。\n")
+
+    # ── CM§7 股票回购与股东回报核验提示 ──
+    rep_info = _parse_repurchase_info(sections.get("15", ""))
+    if rep_info:
+        parts.append(format_header(2, "CM§7 股票回购与股东回报核验提示"))
+        parts.append(
+            f"> ⚠️ **回购数据监测**：§15 监测到近期累计回购 **{rep_info['count']}** 笔，已回购金额约 **{rep_info['amount']} {rep_info['unit']}**（最新交易日：{rep_info['latest_date']}）。\n"
+            "> - **附注核实铁律**：LLM 必须查阅 `data_pack_report.md` 中的 `## RET` 章节或财报中报，核验回购股份是否**注销**以及是否有董事会批准的《未来三年股东回报规划》。\n"
+            "> - **定量联动**：若确认为注销型回购或有确定性分红/回购承诺，必须按年化金额计入定量模型中的 $O$（年均注销型回购），并在 §17.11 穿透回报率网格中叠加加法修正项，**严禁盲目默认 $O=0$**。\n"
+        )
+
     parts.append("---\n*computed_metrics.md · 由 scripts/quality_control.py 生成 · 内部工件（非交付物）*")
     return "\n".join(parts) + "\n"
+
+
+def _parse_repurchase_info(block: str) -> Optional[Dict[str, str]]:
+    """Parse repurchase summary from §15 block."""
+    if not block:
+        return None
+    m_cnt = re.search(r"近期累计回购笔数:\s*\*\*(\d+)\s*笔\*\*", block)
+    m_amt = re.search(r"近期样本已回购金额:\s*\*\*([0-9.,]+)\s*([^\*]+)\*\*", block)
+    m_date = re.search(r"最新回购交易日:\s*\*\*([^\*]+)\*\*", block)
+    if m_amt or m_cnt:
+        return {
+            "count": m_cnt.group(1) if m_cnt else "若干",
+            "amount": m_amt.group(1) if m_amt else "—",
+            "unit": m_amt.group(2).strip() if m_amt else "",
+            "latest_date": m_date.group(1) if m_date else "—",
+        }
+    return None
 
 
 def _dividends_by_year(block: str) -> Dict[str, float]:

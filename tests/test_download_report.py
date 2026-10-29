@@ -17,6 +17,8 @@ from download_report import (
     build_filename,
     download_annual_report,
     get_headers,
+    is_hk_code,
+    _fetch_hkex_candidates,
     main,
     print_result,
     validate_url,
@@ -87,6 +89,13 @@ class TestBuildFilename:
 
     def test_hk_stock_no_prefix(self):
         assert build_filename("00700", "年报", "2024") == "00700_2024_年报.pdf"
+
+    def test_hk_stock_with_suffix(self):
+        assert build_filename("06078.HK", "年报", "2025") == "06078_2025_年报.pdf"
+        assert build_filename("06078.hk", "中报", "2026") == "06078_2026_中报.pdf"
+
+    def test_hk_stock_with_prefix(self):
+        assert build_filename("HK06078", "年报", "2025") == "06078_2025_年报.pdf"
 
     def test_strips_sh_prefix(self):
         result = build_filename("SH600887", "年报", "2024")
@@ -304,3 +313,62 @@ class TestMain:
                     "--save-dir", tmpdir,
                 ])
             assert exc_info.value.code == EXIT_PDF_VALIDATION_FAILURE
+
+    @patch("download_report.fetch_complete_report_pack", return_value=EXIT_SUCCESS)
+    def test_fetch_all_cli(self, mock_fetch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(SystemExit) as exc_info:
+                main([
+                    "--stock-code", "600600",
+                    "--save-dir", tmpdir,
+                    "--fetch-all",
+                ])
+            assert exc_info.value.code == EXIT_SUCCESS
+            mock_fetch.assert_called_once()
+
+
+# --- TestHKEXnewsSupport ---
+
+class TestHKEXnewsSupport:
+    def test_is_hk_code(self):
+        assert is_hk_code("06078.HK") is True
+        assert is_hk_code("00700") is True
+        assert is_hk_code("HK06078") is True
+        assert is_hk_code("600887.SH") is False
+        assert is_hk_code("000858") is False
+        assert is_hk_code("300750") is False
+
+    @patch("download_report.requests.get")
+    def test_fetch_hkex_candidates_parsing(self, mock_get):
+        import json
+        # Mock activestock response
+        mock_stock_resp = MagicMock()
+        mock_stock_resp.json.return_value = [
+            {"c": "06078", "d": "海吉亚医疗", "i": 82071}
+        ]
+        # Mock titleSearchServlet response
+        mock_search_resp = MagicMock()
+        mock_search_resp.json.return_value = {
+            "result": json.dumps([
+                {
+                    "TITLE": "2026年中期報告",
+                    "FILE_LINK": "/listedco/listconews/sehk/2026/0918/2026091800404_c.pdf",
+                },
+                {
+                    "TITLE": "年報2025",
+                    "FILE_LINK": "/listedco/listconews/sehk/2026/0428/2026042803648_c.pdf",
+                },
+                {
+                    "TITLE": "2025年度環境、社會及管治報告",
+                    "FILE_LINK": "/listedco/listconews/sehk/2026/0428/2026042803738_c.pdf",
+                },
+            ])
+        }
+        mock_get.side_effect = [mock_stock_resp, mock_search_resp]
+
+        candidates = _fetch_hkex_candidates("06078.HK")
+        assert ("2026", "中报") in candidates
+        assert ("2025", "年报") in candidates
+        # ESG report should be filtered out
+        assert ("2025", "ESG") not in candidates
+        assert candidates[("2025", "年报")][1].startswith("https://www1.hkexnews.hk/")

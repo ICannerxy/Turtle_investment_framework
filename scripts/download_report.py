@@ -15,6 +15,8 @@ Usage:
 """
 
 import argparse
+from datetime import date
+import json
 import os
 import re
 import sys
@@ -78,18 +80,21 @@ def parse_args(argv=None):
         description="Download financial report PDF from cninfo.com.cn, stockn.xueqiu.com, or 10jqka.com.cn"
     )
     parser.add_argument(
-        "--url", required=True, help="PDF URL from cninfo.com.cn, stockn.xueqiu.com, or 10jqka.com.cn"
+        "--url", required=False, help="PDF URL from cninfo.com.cn, stockn.xueqiu.com, or 10jqka.com.cn"
     )
     parser.add_argument(
-        "--stock-code", required=True, help="Stock code (e.g. SH600887, 00700)"
+        "--stock-code", required=True, help="Stock code (e.g. SH600887, 00700, 600600)"
+    )
+    parser.add_argument(
+        "--company", default="", help="Company name (optional, assists in report search)"
     )
     parser.add_argument(
         "--report-type",
-        required=True,
+        required=False,
         help="Report type (年报/中报/一季报/三季报/annual/interim)",
     )
     parser.add_argument(
-        "--year", required=True, help="Report year (e.g. 2024)"
+        "--year", required=False, help="Report year (e.g. 2024)"
     )
     parser.add_argument(
         "--save-dir", default=".", help="Directory to save the PDF (default: .)"
@@ -100,7 +105,18 @@ def parse_args(argv=None):
         default=DEFAULT_MAX_RETRIES,
         help=f"Max download retries (default: {DEFAULT_MAX_RETRIES})",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--fetch-all",
+        action="store_true",
+        help="Auto-fetch complete report package (latest 2 years annual reports + current year Q1, Interim, Q3 reports)",
+    )
+    args = parser.parse_args(argv)
+    if not args.fetch_all and (not args.url or not args.report_type or not args.year):
+        if args.stock_code and not args.url:
+            args.fetch_all = True
+        else:
+            parser.error("--url, --report-type, and --year are required unless --fetch-all is specified.")
+    return args
 
 
 def validate_url(url):
@@ -116,8 +132,8 @@ def validate_url(url):
 def build_filename(stock_code, report_type, year):
     """Build output filename: {code}_{year}_{report_type}.pdf
 
-    Strips SH/SZ prefix from stock_code to match coordinator.md convention
-    (e.g. 600887_2024_年报.pdf).
+    Strips SH/SZ/HK prefix and exchange suffix (.SH/.SZ/.HK) from stock_code to match
+    coordinator.md convention (e.g. 600887_2024_年报.pdf, 06078_2025_年报.pdf).
     """
     # Normalize report type
     type_map = {
@@ -127,8 +143,8 @@ def build_filename(stock_code, report_type, year):
         "q3": "三季报",
     }
     normalized = type_map.get(report_type.lower(), report_type)
-    # Strip exchange prefix for filename
-    code = re.sub(r"^(SH|SZ)", "", stock_code, flags=re.IGNORECASE)
+    # Strip exchange prefix and suffix for filename
+    code = re.sub(r"^(SH|SZ|HK)", "", stock_code, flags=re.IGNORECASE).split(".")[0].strip()
     return f"{code}_{year}_{normalized}.pdf"
 
 
@@ -233,8 +249,239 @@ def print_result(success, filepath="", filesize=0, url="", stock_code="",
     print("---END---")
 
 
+def is_hk_code(stock_code: str) -> bool:
+    """Check if stock code represents a Hong Kong stock."""
+    s = stock_code.upper().strip()
+    if s.endswith(".HK") or s.startswith("HK"):
+        return True
+    clean = re.sub(r"[^\d]", "", s)
+    if len(clean) == 5:
+        return True
+    return False
+
+
+def _fetch_hkex_candidates(stock_code: str) -> dict:
+    """Fetch report candidates from HKEXnews (披露易) for HK stocks.
+
+    Returns dict mapping (year_str, rtype_str) -> (title, full_url)
+    """
+    clean_digits = re.sub(r"[^\d]", "", stock_code)
+    if not clean_digits:
+        return {}
+    code_5d = f"{int(clean_digits):05d}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.hkexnews.hk/",
+    }
+    candidates = {}
+    try:
+        # Step 1: Map 5-digit code to HKEX internal stockId
+        r_stock = requests.get(
+            "https://www1.hkexnews.hk/ncms/script/eds/activestock_sehk_c.json",
+            headers=headers,
+            timeout=10,
+        )
+        stock_list = r_stock.json()
+        hk_item = next((item for item in stock_list if item.get("c") == code_5d), None)
+        if not hk_item:
+            print(f"HKEXnews warning: Stock code {code_5d} not found in active stock list", file=sys.stderr)
+            return candidates
+
+        stock_id = hk_item["i"]
+
+        # Step 2: Query titleSearchServlet for financial reports (t1code=40000)
+        curr_year = date.today().year
+        from_date_hk = f"{curr_year - 3}0101"
+        to_date_hk = f"{curr_year + 1}1231"
+        search_url = (
+            f"https://www1.hkexnews.hk/search/titleSearchServlet.do?"
+            f"sortDir=0&sortByOptions=DateTime&category=0&market=SEHK&stockId={stock_id}"
+            f"&documentType=-1&fromDate={from_date_hk}&toDate={to_date_hk}&title="
+            f"&t1code=40000&t2Gcode=-2&t2code=-2&rowRange=50&lang=zh"
+        )
+        res = requests.get(search_url, headers=headers, timeout=10)
+        data = res.json()
+        result_list = json.loads(data.get("result", "[]"))
+
+        for doc in result_list:
+            title = doc.get("TITLE", "")
+            file_link = doc.get("FILE_LINK", "")
+            if not file_link.lower().endswith(".pdf"):
+                continue
+
+            # Skip ESG, corporate governance, summary, notices
+            if any(skip in title for skip in ["環境", "环境", "ESG", "管治", "摘要", "更正", "澄清", "代表委任", "通函", "通告", "英文", "取消"]):
+                continue
+
+            m_year = re.search(r"(20\d{2})", title)
+            year = m_year.group(1) if m_year else None
+            if not year:
+                continue
+
+            rtype = None
+            if "年報" in title or "年度報告" in title or "年报" in title:
+                rtype = "年报"
+            elif "中期" in title or "半年度" in title:
+                rtype = "中报"
+            elif "第一季度" in title or "一季" in title:
+                rtype = "一季报"
+            elif "第三季度" in title or "三季" in title:
+                rtype = "三季报"
+
+            if rtype:
+                key = (year, rtype)
+                if key not in candidates:
+                    url = "https://www1.hkexnews.hk" + file_link if file_link.startswith("/") else file_link
+                    candidates[key] = (title, url)
+
+    except Exception as e:
+        print(f"HKEXnews report query warning: {e}", file=sys.stderr)
+
+    return candidates
+
+
+def fetch_complete_report_pack(stock_code: str, company: str = "", save_dir: str = ".", max_retries: int = DEFAULT_MAX_RETRIES) -> int:
+    """Fetch the complete report package:
+    1. Latest 2 years annual reports (年报)
+    2. Current year Q1 (一季报), Interim (中报), Q3 (三季报)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    code = re.sub(r"^(SH|SZ|HK)", "", stock_code, flags=re.I).split(".")[0].strip()
+
+    candidates = {}
+
+    is_hk = is_hk_code(stock_code)
+
+    # 1. HK stocks: query HKEXnews (披露易) directly
+    if is_hk:
+        candidates = _fetch_hkex_candidates(stock_code)
+
+    # 2. A-shares (or fallback for HK stocks if company name is provided): query cninfo.com.cn
+    if not candidates:
+        search_terms = []
+        if is_hk:
+            if company:
+                search_terms.append(company)
+        else:
+            search_terms.append(code)
+            if company:
+                search_terms.append(company)
+
+        if search_terms:
+            url_api = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            curr_year = date.today().year
+            se_date_annual = f"{curr_year - 3}-01-01~{curr_year + 1}-12-31"
+            se_date_interim = f"{curr_year - 1}-01-01~{curr_year + 1}-12-31"
+            skip_keywords = (
+                "摘要", "取消", "更正", "英文", "提示", "说明会",
+                "业绩会", "工作函", "回复", "补充", "决议", "保荐", "核查意见", "说明"
+            )
+
+            for term in search_terms:
+                # 1. Annual reports (latest 2 years)
+                try:
+                    data_annual = {
+                        "pageNum": 1, "pageSize": 15, "column": "", "tabName": "fulltext",
+                        "plate": "", "stock": "", "searchkey": f"{term} 年度报告",
+                        "category": "category_ndbg_szsh;", "seDate": se_date_annual
+                    }
+                    r1 = requests.post(url_api, headers=headers, data=data_annual, timeout=10)
+                    for ann in (r1.json().get("announcements") or []):
+                        t = ann.get("announcementTitle", "")
+                        if any(skip in t for skip in skip_keywords):
+                            continue
+                        if "年度报告" not in t and "年报" not in t:
+                            continue
+                        m_year = re.search(r"(20\d{2})", t)
+                        if m_year:
+                            year = m_year.group(1)
+                            key = (year, "年报")
+                            if key not in candidates:
+                                candidates[key] = (t, "http://static.cninfo.com.cn/" + ann.get("adjunctUrl", ""))
+                except Exception as e:
+                    print(f"Annual report query warning: {e}", file=sys.stderr)
+
+                # 2. Interim and quarterly reports
+                try:
+                    data_interim = {
+                        "pageNum": 1, "pageSize": 20, "column": "", "tabName": "fulltext",
+                        "plate": "", "stock": "", "searchkey": f"{term} 报告",
+                        "category": "category_bndbg_szsh;category_yjdbg_szsh;category_sjdbg_szsh;", "seDate": se_date_interim
+                    }
+                    r2 = requests.post(url_api, headers=headers, data=data_interim, timeout=10)
+                    for ann in (r2.json().get("announcements") or []):
+                        t = ann.get("announcementTitle", "")
+                        if any(skip in t for skip in skip_keywords):
+                            continue
+                        m_year = re.search(r"(20\d{2})", t)
+                        if m_year:
+                            year = m_year.group(1)
+                            rtype = None
+                            if "半年度报告" in t or "中报" in t or "中期报告" in t:
+                                rtype = "中报"
+                            elif "第一季度报告" in t or "一季报" in t:
+                                rtype = "一季报"
+                            elif "第三季度报告" in t or "三季报" in t:
+                                rtype = "三季报"
+                            if rtype:
+                                key = (year, rtype)
+                                if key not in candidates:
+                                    candidates[key] = (t, "http://static.cninfo.com.cn/" + ann.get("adjunctUrl", ""))
+                except Exception as e:
+                    print(f"Interim/Quarterly report query warning: {e}", file=sys.stderr)
+
+                if len(candidates) >= 4:
+                    break
+
+    # Select latest 2 annual reports
+    annual_keys = sorted([k for k in candidates if k[1] == "年报"], key=lambda x: x[0], reverse=True)[:2]
+    # Select current year interim and quarterly reports
+    max_year = max([int(k[0]) for k in candidates]) if candidates else date.today().year
+    current_year_str = str(max_year)
+    order_map = {"一季报": 1, "中报": 2, "三季报": 3}
+    interim_keys = sorted(
+        [k for k in candidates if k[0] == current_year_str and k[1] in order_map],
+        key=lambda x: order_map[x[1]]
+    )
+
+    target_keys = annual_keys + interim_keys
+    print(f"\n=== Found {len(target_keys)} Target Reports for {stock_code} ===")
+    success_count = 0
+    for year, rtype in target_keys:
+        title, url = candidates[(year, rtype)]
+        filename = build_filename(stock_code, rtype, year)
+        save_path = os.path.join(save_dir, filename)
+        if os.path.exists(save_path) and os.path.getsize(save_path) > MIN_FILE_SIZE_WARNING:
+            print(f"  [Exists] {filename} ({os.path.getsize(save_path)} bytes)")
+            success_count += 1
+            continue
+        print(f"  Downloading: {title} -> {filename} ...")
+        ok, msg, fsize = download_annual_report(url, save_path, max_retries=max_retries)
+        if ok:
+            print(f"  ✅ [Downloaded] {filename} ({fsize} bytes)")
+            success_count += 1
+        else:
+            print(f"  ❌ [Failed] {filename}: {msg}", file=sys.stderr)
+
+    return EXIT_SUCCESS if success_count > 0 else EXIT_NETWORK_FAILURE
+
+
 def main(argv=None):
     args = parse_args(argv)
+
+    if args.fetch_all:
+        code = fetch_complete_report_pack(
+            stock_code=args.stock_code,
+            company=args.company,
+            save_dir=args.save_dir,
+            max_retries=args.max_retries
+        )
+        sys.exit(code)
 
     # Validate URL
     valid, err_msg = validate_url(args.url)

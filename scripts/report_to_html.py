@@ -12,13 +12,13 @@ Optional:
 """
 
 import argparse
-import re
-import os
-import sys
+from datetime import date
 from pathlib import Path
+import re
+import sys
 
+from jinja2 import BaseLoader, Environment
 import markdown
-from jinja2 import Environment, FileSystemLoader, BaseLoader
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +113,8 @@ def parse_report(md_text: str) -> dict:
     # Format A: "# 定性分析 — CompanyName (Code)"
     title_match = re.search(r"#\s+定性分析.*?—\s*(.+?)\s*\((.+?)\)", md_text)
     if title_match:
-        result["company_name"] = title_match.group(1)
-        result["stock_code"] = title_match.group(2)
+        result["company_name"] = title_match.group(1).strip()
+        result["stock_code"] = title_match.group(2).strip()
     else:
         # Format B: "# 美的集团（000333.SZ / 0300.HK）— 商业模式与护城河定性分析"
         title_match_b = re.search(
@@ -123,16 +123,35 @@ def parse_report(md_text: str) -> dict:
         if title_match_b:
             result["company_name"] = title_match_b.group(1).strip()
             result["stock_code"] = title_match_b.group(2).strip()
+        else:
+            # Format C: "# 青岛啤酒股份 (00168.HK) 商业模式与护城河定性评估报告"
+            title_match_c = re.search(
+                r"^#\s+([^\(（\n]+?)\s*[（(]([A-Za-z0-9\.\s/]+)[）)]", md_text, re.M
+            )
+            if title_match_c:
+                result["company_name"] = title_match_c.group(1).strip()
+                result["stock_code"] = title_match_c.group(2).strip()
+
+    # Fallback to metadata block in frontmatter/body
+    if not result["company_name"] or not result["stock_code"]:
+        m_code = re.search(r"标的代码[：:\s*]+([A-Za-z0-9\.\s/]+)", md_text)
+        if m_code and not result["stock_code"]:
+            result["stock_code"] = m_code.group(1).split("（")[0].strip()
+        m_comp = re.search(r"分析主体[：:\s*]+([^\(\n]+)", md_text)
+        if m_comp and not result["company_name"]:
+            result["company_name"] = m_comp.group(1).strip()
 
     # Date extraction: try multiple formats
     date_match = re.search(r"\*生成时间:\s*(.+?)\*", md_text)
     if date_match:
-        result["generated_date"] = date_match.group(1)
+        result["generated_date"] = date_match.group(1).strip()
     else:
         # Format B: "> 分析日期：2026-04-05" or footer "分析日期 2026-04-05"
-        date_match_b = re.search(r"分析日期[：:\s]+(\d{4}-\d{2}-\d{2})", md_text)
+        date_match_b = re.search(r"(?:分析日期|数据基准|生成时间)[：:\s]+(\d{4}[年\-\.]\d{1,2}[月\-\.]\d{1,2}日?|\d{4}-\d{2}-\d{2})", md_text)
         if date_match_b:
-            result["generated_date"] = date_match_b.group(1)
+            result["generated_date"] = date_match_b.group(1).strip()
+        else:
+            result["generated_date"] = date.today().strftime("%Y-%m-%d")
 
     # --- Split by ## headers ---
     sections = re.split(r"(?=^## )", md_text, flags=re.MULTILINE)
@@ -274,16 +293,17 @@ def extract_data_pack_info(dp_text: str) -> dict:
         "industry": "",
     }
 
-    price_m = re.search(r"当前价格[|\s]+(\d+\.?\d*)", dp_text)
+    price_m = re.search(r"当前价格[^\d\|]*\|\s*([0-9\.]+)", dp_text)
+    if not price_m:
+        price_m = re.search(r"当前价格[|\s]+(\d+\.?\d*)", dp_text)
     if price_m:
         info["current_price"] = price_m.group(1)
 
-    mcap_m = re.search(r"总市值\s*\(万元\)\s*\|\s*([\d,.]+)", dp_text)
+    mcap_m = re.search(r"总市值[^\d\|]*\|\s*([\d,.]+)", dp_text)
     if mcap_m:
         val = mcap_m.group(1).replace(",", "")
         try:
-            v = float(val)
-            info["market_cap"] = f"{v / 10000:.0f}亿"
+            info["market_cap"] = f"{float(val) / 100:.0f}亿"
         except ValueError:
             info["market_cap"] = mcap_m.group(1)
 

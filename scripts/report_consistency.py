@@ -21,10 +21,11 @@ adjudicates 真错误 vs 口径差异.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 WINDOW = 30
 
@@ -191,7 +192,33 @@ def _cjk_count(s: str) -> int:
     return sum(1 for ch in s if "一" <= ch <= "鿿")
 
 
-def check_gates(text: str) -> List[str]:
+def check_shareholder_return_gate(text: str, sections_json_path: Union[str, List[str], None] = None) -> List[str]:
+    failures = []
+    if not sections_json_path:
+        return failures
+    paths = [sections_json_path] if isinstance(sections_json_path, str) else sections_json_path
+    ret_texts = []
+    for pth in paths:
+        if pth and os.path.isfile(pth):
+            try:
+                with open(pth, "r", encoding="utf-8") as f:
+                    sec_data = json.load(f)
+                txt = sec_data.get("RET") or ""
+                if txt:
+                    ret_texts.append(txt)
+            except Exception as e:
+                sys.stderr.write(f"[report_consistency] 检查股东回报门控异常 ({pth}): {e}\n")
+    ret_combined = "\n".join(ret_texts)
+    ret_kw = ("股東回報", "股东回报", "回购", "回購", "股份購回", "未来三年", "三年规划", "三年回报", "三年分红", "注销", "註銷")
+    has_ret_disclosure = any(kw in ret_combined for kw in ret_kw) and len(ret_combined.strip()) > 20
+    if has_ret_disclosure:
+        report_kw = ("股东回报", "股東回報", "回购", "回購", "分红规划", "注销")
+        if not any(kw in text for kw in report_kw):
+            failures.append("【股东回报硬门控】检测到财报存在股东回报/股份回购披露（RET），但报告正文未体现任何股东回报或回购分析")
+    return failures
+
+
+def check_gates(text: str, sections_json_path: Union[str, List[str], None] = None) -> List[str]:
     failures = []
     for name, minimum in DIMENSION_MINS:
         body = _section_body(text, name)
@@ -208,6 +235,8 @@ def check_gates(text: str) -> List[str]:
     for header in REQUIRED_SECTIONS:
         if header not in text:
             failures.append(f"缺少必备章节标题「{header}」")
+    if sections_json_path:
+        failures.extend(check_shareholder_return_gate(text, sections_json_path))
     return failures
 
 
@@ -249,6 +278,7 @@ def main(argv=None) -> int:
     ap.add_argument("--output", help="consistency_report.md 输出路径（可选）")
     ap.add_argument("--tolerance", type=float, default=0.05, help="同类判定容差（默认 0.05）")
     ap.add_argument("--gates", action="store_true", help="附加执行硬门槛检查（杠杆7）")
+    ap.add_argument("--sections-json", help="pdf_sections.json 路径（可选，用于核验股东回报与附注覆盖度）")
     args = ap.parse_args(argv)
 
     if not os.path.isfile(args.report):
@@ -260,8 +290,20 @@ def main(argv=None) -> int:
         sys.stderr.write("[report_consistency] 报告为空。\n")
         return 2
 
+    # Auto-detect sections json if not specified
+    sections_json: Union[str, List[str], None] = args.sections_json
+    if not sections_json and args.gates:
+        report_dir = os.path.dirname(os.path.abspath(args.report))
+        detected = []
+        for cand_name in ("pdf_sections.json", "pdf_sections_interim.json"):
+            cand_path = os.path.join(report_dir, cand_name)
+            if os.path.isfile(cand_path):
+                detected.append(cand_path)
+        if detected:
+            sections_json = detected
+
     conflicts = find_conflicts(extract(text), args.tolerance)
-    gate_failures = check_gates(text) if args.gates else None
+    gate_failures = check_gates(text, sections_json) if args.gates else None
 
     report = render(conflicts, gate_failures, args.tolerance)
     if args.output:

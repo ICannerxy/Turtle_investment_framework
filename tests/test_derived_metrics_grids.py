@@ -214,6 +214,22 @@ class TestPenetrationGrid:
         assert "28%" in result
         assert "20%" in result
 
+    def test_hk_akshare_total_market_cap_grid(self):
+        """AkShare HK stocks provide total_market_cap (百万港元)."""
+        client = _make_client()
+        client._currency = "HKD"
+        client._store = _base_store()
+        client._store["basic_info"] = pd.DataFrame([
+            {"close": 9.41, "total_market_cap": 5669.28}])
+        client._compute_factor3_step1()
+        client._compute_factor3_step4()
+        client._compute_factor3_sensitivity_base()
+        client._compute_payout_crosscheck()
+        result = client._compute_penetration_grid("06078.HK")
+        assert result is not None
+        assert "17.11 穿透回报率网格（税后）" in result
+        assert "20%" in result
+
 
 # ===== §17.12 G grid =====
 

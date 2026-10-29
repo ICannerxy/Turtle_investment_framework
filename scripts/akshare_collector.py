@@ -20,7 +20,6 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -37,6 +36,7 @@ except ImportError:
     _yf_available = False
 
 from format_utils import format_number, format_table, format_header
+from repurchase_utils import fetch_hk_repurchase_summary
 from tushare_modules import (
     InfrastructureMixin,
     DerivedMetricsMixin,
@@ -200,6 +200,7 @@ class AkshareClient(InfrastructureMixin, DerivedMetricsMixin, AssemblyMixin):
 
         total_mv_wan = (close * total_share / 10000.0) if (close and total_share) else None
         circ_mv_wan = (close * float_share / 10000.0) if (close and float_share) else None
+        total_market_cap = (total_mv_wan / 100.0) if total_mv_wan else None
 
         daily_record = {
             "ts_code": ts_code,
@@ -209,6 +210,7 @@ class AkshareClient(InfrastructureMixin, DerivedMetricsMixin, AssemblyMixin):
             "pb": pb,
             "total_mv": total_mv_wan,
             "circ_mv": circ_mv_wan,
+            "total_market_cap": total_market_cap,
             "total_share": (total_share / 10000.0) if total_share else None,
             "float_share": (float_share / 10000.0) if float_share else None,
         }
@@ -312,6 +314,7 @@ class AkshareClient(InfrastructureMixin, DerivedMetricsMixin, AssemblyMixin):
             "pe_ttm": pe_ttm,
             "pb": pb,
             "total_mv": market_cap_wan,
+            "total_market_cap": (market_cap_wan / 100.0) if market_cap_wan else None,
             "circ_mv": market_cap_wan,
             "total_share": (total_share / 10000.0) if total_share else None,
             "float_share": (total_share / 10000.0) if total_share else None,
@@ -1376,8 +1379,13 @@ class AkshareClient(InfrastructureMixin, DerivedMetricsMixin, AssemblyMixin):
     def get_repurchase(self, ts_code: str) -> str:
         ts_code, raw_code, _ = normalize_code(ts_code)
         if self._is_hk(ts_code):
-            return ""
+            df_rep, md = fetch_hk_repurchase_summary(raw_code, self._unit_label())
+            if df_rep is not None:
+                self._store["repurchase"] = df_rep
+            return md
+
         lines = [format_header(2, "15. 股票回购"), ""]
+
         try:
             df_rep = ak.stock_repurchase_em()
             sub = df_rep[df_rep["股票代码"] == raw_code]
@@ -1450,6 +1458,7 @@ class AkshareClient(InfrastructureMixin, DerivedMetricsMixin, AssemblyMixin):
                 ("11. 十年周线行情", self.get_weekly_prices),
                 ("12. 关键财务指标", self.get_fina_indicators),
                 ("14. 无风险利率", self.get_risk_free_rate),
+                ("15. 股票回购", self.get_repurchase),
             ]
         else:
             sections = [

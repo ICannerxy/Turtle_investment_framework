@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+from datetime import date
 import os
 import re
 import sys
@@ -453,7 +454,7 @@ pre {
       <span class="tag-badge badge-blue">v2.0 Framework</span>
     </div>
     <div style="display: flex; gap: 10px; align-items: center;">
-      <span class="tag-badge badge-green">06049.HK 保利物业</span>
+      <span class="tag-badge badge-green">{{ header_badge }}</span>
       <button onclick="window.print()" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); padding: 5px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; color: var(--text-secondary);">🖨️ 打印/另存PDF</button>
     </div>
   </div>
@@ -464,17 +465,7 @@ pre {
   <aside class="sidebar-toc">
     <div class="toc-title">目录导航</div>
     <ul class="toc-nav">
-      <li><a href="#报告元信息">📋 报告元信息</a></li>
-      <li><a href="#一executive-summary执行摘要">🎯 执行摘要</a></li>
-      <li><a href="#关键假设汇总">🔑 关键假设汇总</a></li>
-      <li><a href="#15-财务趋势速览近5年">📈 5年财务趋势</a></li>
-      <li><a href="#二因子1a五分钟快筛">⚡ 因子1A：五分钟快筛</a></li>
-      <li><a href="#三因子1b深度定性分析">🏰 因子1B：商业模式与护城河</a></li>
-      <li><a href="#四因子2穿透回报率粗算top-down">🧮 因子2：穿透粗算 (Top-Down)</a></li>
-      <li><a href="#五因子3穿透回报率精算bottom-up--现金质量审计">🔬 因子3：现金审计与精算</a></li>
-      <li><a href="#六因子4估值与安全边际">🛡️ 因子4：估值与安全边际</a></li>
-      <li><a href="#七最终综合输出">🏆 综合结论</a></li>
-      <li><a href="#八风险提示与待验证事项">⚠️ 风险与待核实事项</a></li>
+      {{ sidebar_toc }}
     </ul>
   </aside>
 
@@ -532,8 +523,92 @@ def main():
         md_text = f.read()
 
     # Extract Title & Metadata
-    title_match = re.search(r"#\s*(.+)", md_text)
+    title_match = re.search(r"^#\s*(.+)$", md_text, re.M)
     title = title_match.group(1).strip() if title_match else "龟龟投资策略 · 选股分析报告"
+
+    # Dynamic metadata extraction
+    company, code = "", ""
+    tm = re.search(r"\|\s*\*{0,2}分析标的\*{0,2}\s*\|\s*([^\n\|]+)", md_text)
+    if tm:
+        first_part = tm.group(1).split("/")[0].strip()
+        cm = re.search(r"([^\(（\s]+)\s*[\(（]([^\)）]+)[\)）]", first_part)
+        if cm:
+            company = cm.group(1).strip()
+            code = cm.group(2).strip()
+
+    if not company or not code:
+        cm = re.search(r"[：:]\s*([^\(（\s]+)[\(（]([^\)）]+)[\)）]", title)
+        if cm:
+            company = company or cm.group(1).strip()
+            code = code or cm.group(2).strip()
+
+    market = "股票市场"
+    if ".HK" in code or "港股" in md_text[:500]:
+        market = "HKEX · 港股主板"
+    elif ".SH" in code or any(code.startswith(p) for p in ("600", "601", "603", "688")):
+        market = "SSE · 上交所"
+    elif ".SZ" in code or any(code.startswith(p) for p in ("000", "001", "002", "300")):
+        market = "SZSE · 深交所"
+    elif ".US" in code:
+        market = "US · 美股"
+
+    price = "—"
+    pm = re.search(r"\|\s*\*{0,2}(?:当前股价|最新股价)\*{0,2}\s*\|\s*\*{0,2}([^\*\n\|]+)", md_text)
+    if pm:
+        price = pm.group(1).strip().split("（")[0].strip()
+
+    cap = "—"
+    cm_cap = re.search(r"\|\s*\*{0,2}(?:最新总市值|最新市值)\*{0,2}\s*\|\s*\*{0,2}([^\*\n\|]+)", md_text)
+    if cm_cap:
+        cap = cm_cap.group(1).strip().split("（")[0].strip()
+
+    date_str = date.today().strftime("%Y-%m-%d")
+    dm = re.search(r"\|\s*\*{0,2}分析日期\*{0,2}\s*\|\s*([^\n\|]+)", md_text)
+    if dm:
+        date_str = dm.group(1).strip()
+
+    summary = "龟龟投资策略深度四因子体系 · 现金流穿透与资产负债表审计"
+    vm = re.search(r"\*{0,2}(?:一句话投资裁决|一句话结论)\*{0,2}[：:]\s*([^\n]+)", md_text)
+    if vm:
+        summary = vm.group(1).replace("**", "").strip()
+
+    rating = "观察"
+    rm = re.search(r"【([^】]+)】", summary)
+    if rm:
+        rating = rm.group(1).strip()
+
+    rough_ret = "—"
+    rm_r = re.search(r"粗算.*?([0-9\.]+%)", md_text)
+    if rm_r:
+        rough_ret = rm_r.group(1)
+
+    refined_ret = "—"
+    rf_r = re.search(r"精算.*?([0-9\.]+%)", md_text)
+    if rf_r:
+        refined_ret = rf_r.group(1)
+
+    threshold = "6.25%"
+    tm_th = re.search(r"门槛.*?(?:II|\(II\))?\s*\|\s*\*{0,2}([0-9\.]+%)", md_text)
+    if tm_th:
+        threshold = tm_th.group(1)
+
+    pe = "—"
+    pem = re.search(r"PE\s*(?:\(TTM\))?\s*(?:仅|为|[:：=])?\s*([0-9\.]+\s*(?:倍|x)?)", md_text, re.I)
+    if pem:
+        pe = pem.group(1).strip()
+
+    percentile = "—"
+    pcm = re.search(r"历史(?:价格)?分位.*?([0-9\.]+%)", md_text)
+    if pcm:
+        percentile = f"历史分位 {pcm.group(1)}"
+
+    rating_color_var = "--amber"
+    if "买入" in rating:
+        rating_color_var = "--green"
+    elif any(k in rating for k in ("规避", "排除", "高风险")):
+        rating_color_var = "--red"
+
+    header_badge = f"{code} {company}".strip() if (code or company) else "龟龟策略研报"
 
     # Extract custom HERO & KPI section if present
     hero_kpi_match = re.search(r"<!-- HERO_KPI_START -->(.*?)<!-- HERO_KPI_END -->", md_text, re.DOTALL)
@@ -541,64 +616,124 @@ def main():
         hero_and_kpi = hero_kpi_match.group(1).strip()
         md_text = md_text.replace(hero_kpi_match.group(0), "")
     else:
-        hero_and_kpi = """
+        hero_and_kpi = f"""
     <div class="report-hero">
       <div class="hero-pre">
-        <span>HKEX · 港股主板</span>
+        <span>{market}</span>
         <span>·</span>
-        <span>物业管理服务龙头</span>
-        <span>·</span>
-        <span>股票代码: 06049.HK</span>
+        <span>股票代码: {code or '—'}</span>
       </div>
-      <h1>保利物业 (06049.HK) · 选股分析报告</h1>
-      <p class="hero-desc">龟龟投资策略深度四因子体系 · 现金流穿透与资产负债表审计（经 2025 官方年报与 2026 中报 PDF 原件逐行审计）</p>
+      <h1>{company or '标的公司'} ({code or '—'}) · 选股分析报告</h1>
+      <p class="hero-desc">{summary}</p>
     </div>
 
     <!-- Executive KPI Grid -->
     <div class="kpi-grid">
       <div class="kpi-card">
         <div class="kpi-label">最新收盘价 (P)</div>
-        <div class="kpi-val">26.24 <span style="font-size: 0.9rem; font-weight: normal; color: var(--text-muted)">HKD</span></div>
-        <div class="kpi-sub">历史周线 11.4% 底部</div>
+        <div class="kpi-val">{price}</div>
+        <div class="kpi-sub">{percentile}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">2026H1 营收 / 归母</div>
-        <div class="kpi-val" style="color: var(--accent);">88.3亿 / 9.33亿</div>
-        <div class="kpi-sub">同比 +5.2% / +4.8% (稳健抗周期)</div>
+        <div class="kpi-label">市盈率 PE(TTM)</div>
+        <div class="kpi-val" style="color: var(--accent);">{pe}</div>
+        <div class="kpi-sub">{cap}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">账面自由净现金</div>
-        <div class="kpi-val" style="color: var(--green);">101.3 <span style="font-size: 0.9rem; font-weight: normal; color: var(--text-muted)">亿HKD</span></div>
-        <div class="kpi-sub">派发5.6亿股息后仍占市值 69.7%</div>
+        <div class="kpi-label">穿透回报率 (粗算)</div>
+        <div class="kpi-val" style="color: var(--green);">{rough_ret}</div>
+        <div class="kpi-sub">覆盖无风险利率 Rf</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">剔除净现金 EV / PE</div>
-        <div class="kpi-val">44.0亿 / 2.36x</div>
-        <div class="kpi-sub">2026年化 PE 仅 7.78x</div>
+        <div class="kpi-label">精算穿透回报率 (GG)</div>
+        <div class="kpi-val" style="color: var(--amber);">{refined_ret}</div>
+        <div class="kpi-sub">安全边际门槛: {threshold}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-label">现价毛股息率 / 支付率</div>
-        <div class="kpi-val" style="color: var(--green);">6.12% <span style="font-size: 0.9rem; font-weight: normal; color: var(--text-muted)">/ 50%</span></div>
-        <div class="kpi-sub">年报审计确证 · 连续两年50%高派息</div>
+        <div class="kpi-label">最新市值</div>
+        <div class="kpi-val" style="font-size: 1.15rem;">{cap}</div>
+        <div class="kpi-sub">现金流与负债经逐行审计</div>
       </div>
-      <div class="kpi-card" style="border-left: 4px solid var(--green);">
+      <div class="kpi-card" style="border-left: 4px solid var({rating_color_var});">
         <div class="kpi-label">投资综合评级</div>
-        <div class="kpi-val" style="font-size: 1.25rem; color: var(--green);">建议买入</div>
-        <div class="kpi-sub">核心防守底仓 · 确定性现金奶牛</div>
+        <div class="kpi-val" style="font-size: 1.25rem; color: var({rating_color_var});">{rating}</div>
+        <div class="kpi-sub">严谨四因子体系裁决</div>
       </div>
     </div>
     """
 
+    # Clean up leading h1 and separator from body to avoid duplicate hero title
+    clean_md = re.sub(r"^#\s*.*?\n+", "", md_text, count=1).lstrip()
+    if clean_md.startswith("---"):
+        clean_md = re.sub(r"^---\s*\n+", "", clean_md, count=1).lstrip()
+
+    # Dynamic Sidebar TOC generation
+    toc_items = []
+    icon_map = {
+        "元信息": "📋",
+        "Executive Summary": "🎯",
+        "执行摘要": "🎯",
+        "假设": "🔑",
+        "趋势": "📈",
+        "商业模式": "🏰",
+        "护城河": "🏰",
+        "因子一": "🏰",
+        "粗算": "🧮",
+        "因子二": "🧮",
+        "精算": "🔬",
+        "现金": "🔬",
+        "因子三": "🔬",
+        "估值": "🛡️",
+        "安全边际": "🛡️",
+        "因子四": "🛡️",
+        "核查": "🔍",
+        "交叉验证": "🔍",
+        "财报": "📊",
+        "因子五": "📊",
+        "价值陷阱": "🪤",
+        "陷阱": "🪤",
+        "监控": "📡",
+        "决策": "🏆",
+        "操作": "🧭",
+        "风险": "⚠️",
+    }
+
+    h2_matches = re.findall(r"^##\s+(.+)$", clean_md, re.M)
+    for h2_raw in h2_matches:
+        h2_title = h2_raw.strip()
+        anchor_id = re.sub(r"[^\w\u4e00-\u9fff]+", "-", h2_title).strip("-")
+        icon = "📌"
+        for k, ic in icon_map.items():
+            if k.lower() in h2_title.lower():
+                icon = ic
+                break
+        clean_title = re.sub(r"[\*_`]+", "", h2_title).strip()
+        toc_items.append(f'<li><a href="#{anchor_id}">{icon} {clean_title}</a></li>')
+
+    sidebar_toc = "\n      ".join(toc_items) if toc_items else '<li><a href="#报告内容">📄 报告内容</a></li>'
+
     # Convert Markdown to HTML with tables & code fences
     html_content = markdown.markdown(
-        md_text,
+        clean_md,
         extensions=["tables", "fenced_code", "nl2br", "sane_lists"]
     )
 
+    # Inject matching anchor IDs directly into <h2> tags
+    def _add_h2_id(m):
+        attrs = m.group(1) or ""
+        text = m.group(2)
+        plain = re.sub(r"<[^>]+>", "", text).strip()
+        anchor = re.sub(r"[^\w\u4e00-\u9fff]+", "-", plain).strip("-")
+        return f'<h2 id="{anchor}"{attrs}>{text}</h2>'
+
+    html_content = re.sub(r"<h2([^>]*)>(.*?)</h2>", _add_h2_id, html_content)
+
     rendered = TEMPLATE.replace("{{ title }}", title)
+    rendered = rendered.replace("{{ header_badge }}", header_badge)
     rendered = rendered.replace("{{ hero_and_kpi }}", hero_and_kpi)
+    rendered = rendered.replace("{{ sidebar_toc }}", sidebar_toc)
     rendered = rendered.replace("{{ content }}", html_content)
-    rendered = rendered.replace("{{ date }}", "2026-10-29")
+    rendered = rendered.replace("{{ date }}", date_str)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

@@ -1934,10 +1934,18 @@ class TestHKPlaceholderSections:
         result = client.get_audit("00700.HK")
         assert "港股暂不支持" in result
 
-    def test_hk_repurchase_placeholder(self):
+    @patch("tushare_modules.other_data.fetch_hk_repurchase_summary")
+    def test_hk_repurchase_placeholder(self, mock_fetch):
+        mock_fetch.return_value = (
+            pd.DataFrame([{"REPO_AMT": 100000000}]),
+            "## 15. 股票回购\n\n- 近期累计回购笔数: **10 笔**\n- 近期样本已回购金额: **100.00 百万港元**\n"
+        )
         client = _make_client()
+        client._currency = "HKD"
         result = client.get_repurchase("00700.HK")
-        assert "港股暂不支持" in result
+        assert "15. 股票回购" in result
+        assert "100.00 百万港元" in result
+        mock_fetch.assert_called_once_with("00700", "百万港元")
 
     def test_hk_pledge_not_applicable(self):
         client = _make_client()

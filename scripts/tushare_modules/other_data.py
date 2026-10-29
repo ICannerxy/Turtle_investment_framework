@@ -8,6 +8,7 @@ import sys
 import pandas as pd
 
 from format_utils import format_number, format_table, format_header
+from repurchase_utils import fetch_hk_repurchase_summary
 
 
 def _yf():
@@ -312,7 +313,11 @@ class OtherDataMixin:
     def get_repurchase(self, ts_code: str) -> str:
         """Section 15: Share repurchase data from repurchase endpoint."""
         if self._is_hk(ts_code):
-            return format_header(2, "15. 股票回购") + "\n\n数据缺失 (港股暂不支持)\n"
+            raw_code = ts_code.split(".")[0]
+            df_rep, md = fetch_hk_repurchase_summary(raw_code, self._unit_label())
+            if df_rep is not None:
+                self._store["repurchase"] = df_rep
+            return md
         if self._is_us(ts_code):
             return format_header(2, "15. 股票回购") + "\n\n数据缺失 (美股暂不支持)\n"
 
